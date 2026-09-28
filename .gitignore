@@ -4,3 +4,6 @@
 
 # macOS
 .DS_Store
+
+# Build output (apps and DMGs)
+builds/
