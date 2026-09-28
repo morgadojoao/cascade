@@ -1,0 +1,6 @@
+# Build products
+*.app/
+*.scpt
+
+# macOS
+.DS_Store
