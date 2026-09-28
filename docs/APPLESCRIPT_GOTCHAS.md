@@ -54,3 +54,18 @@ AppKit UI objects (`NSAlert`, `NSWindow`, any `NSView`) may only be created on t
 
 - `osacompile -o "Name.app" source.applescript` produces a standalone applet; no Xcode needed.
 - The applet needs its own Accessibility grant. Rebuilding creates a new binary and macOS may need the permission toggled off and on in System Settings > Privacy & Security > Accessibility before positioning works again. Symptom of a missing grant: the picker appears but nothing moves and the failure summary is empty or reports "not allowed assistive access" (-1719/-25211).
+
+## Menu bar app (v6, v7)
+
+- A status item with a menu set opens it on mouse-down and never calls the button's action. To tell clicks apart, leave the menu off, give the button `setTarget:me` / `setAction:` / `sendActionOn:`, and attach the menu only to open it (`setMenu:` + `button's performClick:`), detaching in `menuDidClose:`.
+- `NSApp's currentEvent()`: `|type|` needs pipes. `clickCount()` raises on non-mouse events, so check the type first. No bitwise AND in AppleScript: test bit n with `(flags div (2 ^ n)) mod 2` using a literal (262144 for Control).
+- Handlers AppKit calls directly (actions, delegates, `performSelector:afterDelay:` timers) run on the main thread, and an uncaught error there disappears into the system log. Wrap each one in `try` and show an alert.
+- `NSUserDefaults`: inside the app use `standardUserDefaults()`; `initWithSuiteName:` with the app's own bundle id returns nil there. Under osascript open the suite by name.
+- Out-parameter errors: `set {ok, theError} to obj's doSomethingAndReturnError:(reference)`.
+- Words that are terminology and can't be variable names: `st`, `current`, `startup` (and many more from Standard Additions). A compile error that names a normal-looking word usually means this.
+- Stay-open applets write top-level properties back into `main.scpt` on quit. Clear properties holding AppKit objects in `on quit` before `continue quit`.
+
+## DMG
+
+- Lay the window out with Finder AppleScript on a writable (UDRW) image, then convert to UDZO. Finder addresses the disk by its mounted name, so a stale "Cascade" volume makes the new one "Cascade 1".
+- Write `.VolumeIcon.icns` and `SetFile -a C` **after** the Finder step; Finder removed it when written before.
