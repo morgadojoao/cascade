@@ -9,7 +9,10 @@ cd "$(dirname "$0")/.."
 BUNDLE_ID="com.morgadoj.cascade"
 DEST="/Applications/Cascade.app"
 
-finish() { read -k 1 "?$1 Press any key to close this window..."; echo; }
+finish() {
+  # Only wait for a key when opened from Finder (no TTY in automation)
+  if [[ -t 0 ]]; then read -k 1 "?$1 Press any key to close this window..."; echo; fi
+}
 trap 'finish "Build failed."' ERR
 
 ./scripts/build_app.sh
@@ -39,6 +42,11 @@ touch "$DEST"
 echo ""
 echo "Installed: $DEST"
 echo ""
+if [[ -d "$HOME/Applications/Cascade.app" ]]; then
+  echo "Warning: an old copy is still in ~/Applications. Quit it and remove it:"
+  echo "  rm -rf ~/Applications/Cascade.app"
+  echo ""
+fi
 echo "Launching it now. Every build needs Accessibility permission again:"
 echo "right-click the menu bar icon > Select Windows..., allow Cascade when asked"
 echo "(System Settings > Privacy & Security > Accessibility), then try again."

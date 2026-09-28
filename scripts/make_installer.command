@@ -16,9 +16,13 @@ STAGE="$OUT_DIR/dmg-stage"
 TMP_DMG="$OUT_DIR/Cascade-tmp.dmg"
 BG_1X="assets/dmg_background.png"
 BG_2X="assets/dmg_background@2x.png"
-# Finder window content size (matches make_dmg_background.swift) and icon centres
+# Finder window content size and icon centres, in points from the window's
+# top-left. They must match the arrow drawn by make_dmg_background.swift.
 WIN_W=600
 WIN_H=400
+APP_X=150
+APPS_X=450
+ICON_Y=190
 
 finish() {
   # Only wait for a key when opened from Finder (no TTY in automation)
@@ -48,7 +52,7 @@ rm -rf "$STAGE" "$TMP_DMG" "$DMG"
 mkdir -p "$STAGE/.background"
 ditto "$APP" "$STAGE/Cascade.app"
 ln -s /Applications "$STAGE/Applications"
-tiffutil -cathidpicheck "$BG_1X" "$BG_2X" -out "$STAGE/.background/background.tiff" >/dev/null 2>&1
+tiffutil -cathidpicheck "$BG_1X" "$BG_2X" -out "$STAGE/.background/background.tiff" >/dev/null
 
 # 4. Writable image, mounted, so Finder can store the window layout in it.
 # A volume left mounted by an earlier failed run would get a different name
@@ -62,6 +66,9 @@ hdiutil create -quiet -volname "$VOL_NAME" -srcfolder "$STAGE" -fs HFS+ -format 
 MOUNT_DIR=$(hdiutil attach -readwrite -noverify -noautoopen "$TMP_DMG" | awk -F'\t' '/\/Volumes\// { print $NF }')
 [[ -d "$MOUNT_DIR" ]] || { echo "error: couldn't mount $TMP_DMG" >&2; false; }
 echo "Mounted at $MOUNT_DIR"
+# Finder addresses the disk by its mounted name, which is only "Cascade" if no
+# other volume of that name is mounted. Refuse to lay out the wrong one.
+[[ "$MOUNT_DIR" == "/Volumes/$VOL_NAME" ]] || { echo "error: mounted as $MOUNT_DIR, not /Volumes/$VOL_NAME; eject the other \"$VOL_NAME\" volume and retry" >&2; false; }
 
 # 5. Window layout: icon view, no toolbar, background, icon positions.
 # Finder's bounds include the title bar, hence the extra height.
@@ -79,8 +86,8 @@ tell application "Finder"
 		set icon size of viewOptions to 128
 		set text size of viewOptions to 13
 		set background picture of viewOptions to file ".background:background.tiff"
-		set position of item "Cascade.app" of container window to {150, 190}
-		set position of item "Applications" of container window to {450, 190}
+		set position of item "Cascade.app" of container window to {$APP_X, $ICON_Y}
+		set position of item "Applications" of container window to {$APPS_X, $ICON_Y}
 		update without registering applications
 		delay 1
 		close

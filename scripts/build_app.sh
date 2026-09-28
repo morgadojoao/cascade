@@ -1,8 +1,6 @@
 #!/bin/zsh
 # Builds builds/Cascade.app from cascade.applescript. Non-interactive; used by
 # build.command (dev loop) and make_installer.command (DMG).
-#
-#   ./scripts/build_app.sh        -> prints the path of the built app on the last line
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -18,9 +16,10 @@ PLIST="$APP/Contents/Info.plist"
 [[ -f "$SRC" ]] || { echo "error: $SRC not found" >&2; exit 1; }
 
 # Refuse to build a file Script Editor has touched (see docs/APPLESCRIPT_GOTCHAS.md)
-if perl -ne 'print "$.: $_" if /[^\x00-\x7F]/' "$SRC" | grep -q .; then
+bad=$(perl -ne 'print "$.: $_" if /[^\x00-\x7F]/' "$SRC")
+if [[ -n "$bad" ]]; then
   echo "error: $SRC contains non-ASCII characters on these lines:" >&2
-  perl -ne 'print "$.: $_" if /[^\x00-\x7F]/' "$SRC" >&2
+  echo "$bad" >&2
   exit 1
 fi
 
@@ -61,5 +60,8 @@ plist_set LSUIElement bool true
 codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP"
 codesign --verify --deep --strict "$APP"
 
+# Keep this copy out of LaunchServices: the installed one in /Applications has
+# the same bundle id, and `open -b` / Spotlight / login items should find that.
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$APP" 2>/dev/null || true
+
 echo "Built $APP (version $VERSION)"
-echo "$APP"

@@ -73,6 +73,20 @@ on reopen
 	my cascadeWithPicker()
 end reopen
 
+-- A stay-open applet writes its top-level properties back into main.scpt on
+-- quit. Clear the ones holding AppKit objects first: they can't be saved, and
+-- the write must not fail or change more of the (signed) bundle than needed.
+on quit
+	set statusItem to missing value
+	set statusMenu to missing value
+	set sizeMenuItem to missing value
+	set startupMenuItem to missing value
+	set checkBoxes to {}
+	set pickerLabels to {}
+	set pickerResult to missing value
+	continue quit
+end quit
+
 -- ===========================================================================
 -- Menu bar item
 -- ===========================================================================
@@ -112,18 +126,20 @@ on setupStatusItem:arg
 	end try
 end setupStatusItem:
 
--- Returns an NSMenuItem whose action is a handler in this script
+-- Returns an NSMenuItem titled itemTitle whose action is the handler named
+-- actionName in this script; keyEq is its key equivalent ("" for none).
 on newMenuItem(itemTitle, actionName, keyEq)
 	set mi to current application's NSMenuItem's alloc()'s initWithTitle:itemTitle action:actionName keyEquivalent:keyEq
 	mi's setTarget:me
 	return mi
 end newMenuItem
 
--- Button action, on every left or right mouse-up on the icon.
+-- Button action, on every left or right mouse-up on the icon (main thread).
 --   right-click, or Control + left-click -> menu now
 --   left double-click                     -> cascade all
 --   left single click                     -> menu after the double-click interval,
 --                                            unless a second click cancels it
+--   anything else (VoiceOver, keyboard)   -> menu now
 on statusItemClicked:sender
 	try
 		set ev to current application's NSApp's currentEvent()
@@ -139,6 +155,8 @@ on statusItemClicked:sender
 		if evType is 4 or controlDown then -- 4 = NSEventTypeRightMouseUp
 			current application's NSObject's cancelPreviousPerformRequestsWithTarget:me
 			my showStatusMenu()
+		else if evType is not 2 then -- 2 = NSEventTypeLeftMouseUp; clickCount() is only valid for mouse events
+			my showStatusMenu()
 		else if ((ev's clickCount()) as integer) is 2 then
 			current application's NSObject's cancelPreviousPerformRequestsWithTarget:me
 			my cascadeAll()
@@ -146,62 +164,108 @@ on statusItemClicked:sender
 			my performSelector:"singleClickTimerFired:" withObject:(missing value) afterDelay:(current application's NSEvent's doubleClickInterval())
 		end if
 	on error m number n
-		display alert "Cascade failed" message m & " (" & n & ")" as critical
+		my showError(m, n)
 	end try
 end statusItemClicked:
 
--- No second click arrived in time: it was a single click
+-- Timer from statusItemClicked: (main run loop). No second click arrived in
+-- time, so it was a single click: open the menu.
 on singleClickTimerFired:arg
-	my showStatusMenu()
+	try
+		my showStatusMenu()
+	on error m number n
+		my showError(m, n)
+	end try
 end singleClickTimerFired:
 
--- Refresh the menu, attach it and open it under the icon. It is detached
--- again in menuDidClose: so the next click goes to statusItemClicked:.
+-- Refresh the menu, attach it and open it under the icon (main thread). It is
+-- detached again in menuDidClose: so the next click goes to statusItemClicked:.
 on showStatusMenu()
 	my refreshMenu()
 	statusItem's setMenu:statusMenu
 	statusItem's button()'s performClick:(missing value)
 end showStatusMenu
 
--- NSMenuDelegate
+-- NSMenuDelegate, main thread: the menu closed (item chosen or dismissed).
+-- Detach it so the button reports clicks again.
 on menuDidClose:theMenu
-	statusItem's setMenu:(missing value)
+	try
+		statusItem's setMenu:(missing value)
+	on error m number n
+		my showError(m, n)
+	end try
 end menuDidClose:
 
--- Show the current size in the Size item and tick Run at Startup to match the system
+-- Main thread. Shows the current size in the Size item and sets the Run at
+-- Startup tick from the system: on, off, or mixed (a dash) when macOS is
+-- waiting for approval in System Settings.
 on refreshMenu()
 	sizeMenuItem's setTitle:("Size (" & my loadSize() & ")...")
-	if my isRunAtStartupEnabled() then
+	set startupState to my runAtStartupState()
+	if startupState is "on" then
 		startupMenuItem's setState:1 -- NSControlStateValueOn
+	else if startupState is "approval" then
+		startupMenuItem's setState:-1 -- NSControlStateValueMixed
 	else
-		startupMenuItem's setState:0
+		startupMenuItem's setState:0 -- NSControlStateValueOff
 	end if
 end refreshMenu
 
+-- Menu actions. AppKit calls them on the main thread; each one shows its own
+-- errors, because an error left uncaught in an action handler only reaches
+-- the system log.
+
+-- Menu > Select Windows...
 on selectWindowsFromMenu:sender
-	my cascadeWithPicker()
+	my cascadeWithPicker() -- has its own error alert
 end selectWindowsFromMenu:
 
+-- Menu > Size...
 on sizeFromMenu:sender
-	my askForSize()
+	try
+		my askForSize()
+	on error m number n
+		my showError(m, n)
+	end try
 end sizeFromMenu:
 
+-- Menu > Run at Startup. If macOS is waiting for approval, unregistering
+-- would be the wrong answer to a click, so open Login Items instead.
 on toggleStartupFromMenu:sender
-	my setRunAtStartup(not (my isRunAtStartupEnabled()))
+	try
+		set startupState to my runAtStartupState()
+		if startupState is "approval" then
+			my showApprovalNeeded()
+		else
+			my setRunAtStartup(startupState is "off")
+		end if
+	on error m number n
+		my showError(m, n)
+	end try
 end toggleStartupFromMenu:
 
+-- Menu > Quit Cascade (runs the quit handler above)
 on quitFromMenu:sender
 	tell me to quit
 end quitFromMenu:
 
 -- A menu bar app is never frontmost on its own; bring it forward so dialogs
--- get keyboard focus and don't open behind other windows.
+-- get keyboard focus and don't open behind other windows. The NSApp call is
+-- the stronger of the two; it is deprecated since macOS 14, so it is allowed
+-- to fail and the plain activate still runs.
 on bringToFront()
 	try
 		current application's NSApp's activateIgnoringOtherApps:true
 	end try
 	activate
 end bringToFront
+
+-- The generic "Cascade failed" alert for unexpected errors (m = message,
+-- n = number). Main thread: every caller is a menu, button or timer handler.
+on showError(m, n)
+	my bringToFront()
+	display alert "Cascade failed" message m & " (" & n & ")" as critical
+end showError
 
 -- ===========================================================================
 -- Cascading
@@ -452,26 +516,28 @@ on loadSize()
 	return defaultSize
 end loadSize
 
+-- Saves t (already validated, e.g. "1500x900") as the size for double-click
 on saveSize(t)
 	my prefs()'s setObject:t forKey:sizeKey
 end saveSize
 
--- Menu > Size...: ask for a new size, validate it, save it. Loops on invalid
--- input; Cancel leaves the saved size unchanged.
+-- Menu > Size... (main thread): ask for a new size, validate it, save it.
+-- Loops on invalid input; Cancel leaves the saved size unchanged.
 on askForSize()
 	my bringToFront()
 	set sizeText to my loadSize()
-	set prompt to "Window size for cascading (W x H)." & return & "Double-click the menu bar icon to cascade all windows at this size."
+	set usage to "Double-click the menu bar icon to cascade all windows at this size."
+	set prompt to "Window size for cascading (W x H)." & return & usage
 	repeat
 		try
 			set r to display dialog prompt default answer sizeText buttons {"Cancel", "Save"} default button "Save" cancel button "Cancel" with title "Cascade"
-		on error number -128
+		on error number -128 -- user pressed Cancel
 			return
 		end try
 		set sizeText to text returned of r
 		set dims to my parseSize(sizeText)
 		if dims is missing value then
-			set prompt to "Enter the size as width x height, for example 1200x800 (minimum 100x100)."
+			set prompt to "Enter the size as width x height, for example 1200x800 (minimum 100x100)." & return & usage
 		else
 			my saveSize((item 1 of dims as text) & "x" & (item 2 of dims as text))
 			return
@@ -486,37 +552,58 @@ end askForSize
 -- under System Settings > General > Login Items. If registering fails (for
 -- example because of the ad-hoc signature), fall back to a LaunchAgent in
 -- ~/Library/LaunchAgents that runs `open -a <this app>` at login.
+-- All of these run on the main thread (called from the menu).
 
+-- Path of the fallback LaunchAgent plist
 on launchAgentPath()
 	return (POSIX path of (path to home folder)) & "Library/LaunchAgents/" & appBundleId & ".login.plist"
 end launchAgentPath
 
--- True if either mechanism is set up. SMAppService status: 0 not registered,
--- 1 enabled, 2 requires approval (registered, waiting for the user), 3 not found.
-on isRunAtStartupEnabled()
-	try
-		set svcStatus to ((current application's SMAppService's mainAppService()'s status()) as integer)
-		if svcStatus is 1 or svcStatus is 2 then return true
-	end try
-	return ((current application's NSFileManager's defaultManager()'s fileExistsAtPath:(my launchAgentPath())) as boolean)
-end isRunAtStartupEnabled
+-- The real state, read from the system each time:
+--   "on"       login item enabled, or the LaunchAgent plist exists
+--   "approval" registered but switched off / not yet allowed in System Settings
+--   "off"      neither
+-- SMAppService status: 0 not registered, 1 enabled, 2 requires approval,
+-- 3 not found.
+on runAtStartupState()
+	set svcStatus to my loginItemStatus()
+	if svcStatus is 1 then return "on"
+	if ((current application's NSFileManager's defaultManager()'s fileExistsAtPath:(my launchAgentPath())) as boolean) then return "on"
+	if svcStatus is 2 then return "approval"
+	return "off"
+end runAtStartupState
 
--- Turns Run at Startup on or off. Every failure ends in an alert.
+-- SMAppService status of this app, or 0 if the class isn't available (the
+-- LaunchAgent check in runAtStartupState() then decides on its own)
+on loginItemStatus()
+	try
+		return ((current application's SMAppService's mainAppService()'s status()) as integer)
+	on error
+		return 0
+	end try
+end loginItemStatus
+
+-- Tells the user that macOS wants Run at Startup approved and opens Login Items
+on showApprovalNeeded()
+	my bringToFront()
+	display alert "Allow Cascade to run at startup" message "macOS needs your approval. In Login Items, switch Cascade on under \"Open at Login\" or \"Allow in the Background\"." as informational
+	current application's SMAppService's openSystemSettingsLoginItems()
+end showApprovalNeeded
+
+-- Turns Run at Startup on (enable true) or off. Every failure ends in an alert.
 on setRunAtStartup(enable)
 	set svc to current application's SMAppService's mainAppService()
 	if enable then
 		set {ok, theError} to svc's registerAndReturnError:(reference)
 		if ok as boolean then
-			if ((svc's status()) as integer) is 2 then
-				my bringToFront()
-				display alert "Allow Cascade to run at startup" message "macOS needs your approval. In Login Items, switch Cascade on under \"Open at Login\" or \"Allow in the Background\"." as informational
-				current application's SMAppService's openSystemSettingsLoginItems()
-			end if
+			if ((svc's status()) as integer) is 2 then my showApprovalNeeded()
 			return
 		end if
 		-- SMAppService refused: use a LaunchAgent instead
 		set smErr to "unknown error"
 		if theError is not missing value then set smErr to (theError's localizedDescription()) as text
+		-- Launch by path rather than bundle id: a copy in builds/ or on the DMG
+		-- has the same id. If the app is moved later, turn this off and on again.
 		set appPath to (current application's NSBundle's mainBundle()'s bundlePath()) as text
 		set agent to current application's NSDictionary's dictionaryWithDictionary:{|Label|:appBundleId & ".login", |ProgramArguments|:{"/usr/bin/open", "-a", appPath}, |RunAtLoad|:true}
 		set agentDir to (POSIX path of (path to home folder)) & "Library/LaunchAgents"
@@ -527,9 +614,13 @@ on setRunAtStartup(enable)
 		end if
 	else
 		set failText to ""
-		if ((svc's status()) as integer) is not 0 then
+		set svcStatus to (svc's status()) as integer
+		if svcStatus is 1 or svcStatus is 2 then -- only a registered item can be unregistered
 			set {ok, theError} to svc's unregisterAndReturnError:(reference)
-			if not (ok as boolean) and theError is not missing value then set failText to "Login item: " & ((theError's localizedDescription()) as text)
+			if not (ok as boolean) then
+				set failText to "Login item: unknown error"
+				if theError is not missing value then set failText to "Login item: " & ((theError's localizedDescription()) as text)
+			end if
 		end if
 		set fm to current application's NSFileManager's defaultManager()
 		if (fm's fileExistsAtPath:(my launchAgentPath())) as boolean then
@@ -560,6 +651,8 @@ on showPickerOnMainThread:arg
 	end try
 end showPickerOnMainThread:
 
+-- Builds and runs the picker (main thread only). windowLabels: one label per
+-- window; the size field is pre-filled from pickerSize. Returns as above.
 on showPicker(windowLabels)
 	set n to count of windowLabels
 	set rowH to 24
@@ -634,7 +727,7 @@ on showPicker(windowLabels)
 		end repeat
 		
 		if dims is missing value then
-			theAlert's setInformativeText:"Enter the size as width x height, for example 1200x800."
+			theAlert's setInformativeText:"Enter the size as width x height, for example 1200x800 (minimum 100x100)."
 		else if (count of chosenIdx) is 0 then
 			theAlert's setInformativeText:"Select at least one window to cascade."
 		else
@@ -643,6 +736,7 @@ on showPicker(windowLabels)
 	end repeat
 end showPicker
 
+-- All / None button actions (main thread, while the picker is open)
 on selectAllWindows:sender
 	repeat with cb in checkBoxes
 		(cb's setState:1)
@@ -741,6 +835,7 @@ on parseSize(t)
 	return {w, h}
 end parseSize
 
+-- Returns t with every findStr replaced by replStr
 on replaceText(t, findStr, replStr)
 	set AppleScript's text item delimiters to findStr
 	set parts to text items of t
