@@ -1,39 +1,59 @@
 -- Cascade
 --
--- Shows one dialog with a checklist of every open window (App - Title), a size
--- field (width x height, pre-filled), All / None buttons, and a Cascade button.
--- Press Cascade and the checked windows are resized and stepped diagonally.
--- Each window is cascaded on the display it is currently on, starting from the
--- top-left of that display's usable area (below the menu bar, clear of the Dock).
--- Windows are raised in turn so the last one in the list ends up on top.
--- If any window couldn't be moved, a summary is shown at the end.
+-- A menu bar app that cascades open windows diagonally, each on the display it
+-- is already on, starting from the top-left of that display's usable area
+-- (below the menu bar, clear of the Dock).
 --
--- Build it with scripts/build.command to get Cascade.app, which lives in the
--- menu bar (click the icon > Cascade Windows...). Running the source directly
--- with osascript cascades once and exits.
+-- Menu bar icon:
+--   double-click          cascade every window at the saved size, no dialog
+--   right / Control-click open the menu (a plain click opens it after a short
+--                         pause, so a double-click can be told apart)
+-- Menu:
+--   Select Windows...     checklist of windows + size field, then cascade
+--   Size (WxH)...         change the saved size used by double-click
+--   Run at Startup        start Cascade when you log in
+--   Quit Cascade
 --
--- Requires Accessibility permission for whatever runs it (Terminal, Script Editor,
--- or the exported app): System Settings > Privacy & Security > Accessibility.
+-- Windows are raised in turn so the last one ends up on top. If any window
+-- couldn't be moved or resized, one summary alert lists them at the end.
+--
+-- Build with scripts/build.command (dev) or scripts/make_installer.command
+-- (DMG). Running the source directly with osascript opens the picker once.
+--
+-- Requires Accessibility permission for whatever runs it (the app, or Terminal
+-- for osascript): System Settings > Privacy & Security > Accessibility.
 
 use AppleScript version "2.4"
 use framework "AppKit"
+use framework "ServiceManagement"
 use scripting additions
 
-property defaultSize : "1200x800" -- pre-filled value in the size field
+property defaultSize : "1200x800" -- first-run size; after that the saved size (Size... menu) wins
 property stepX : 40 -- horizontal offset between cascaded windows
 property stepY : 32 -- vertical offset between cascaded windows
 property marginX : 20 -- gap from the left edge of the screen's usable area
 property marginY : 20 -- gap from the top edge of the screen's usable area
 
+property appBundleId : "com.morgadoj.cascade" -- must match BUNDLE_ID in scripts/build_app.sh
+property sizeKey : "defaultSize" -- preferences key for the saved size
+
 property checkBoxes : {} -- the checklist controls, so the All / None buttons can reach them
 property pickerLabels : {} -- input to the picker (set before hopping to the main thread)
+property pickerSize : "" -- input to the picker: pre-filled size text
 property pickerResult : missing value -- output of the picker (read after the hop)
 
 property statusItem : missing value -- the menu bar item; kept here so it isn't released
+property statusMenu : missing value -- its menu, attached only while it is open
+property sizeMenuItem : missing value -- "Size (WxH)..." item, retitled when the size changes
+property startupMenuItem : missing value -- "Run at Startup" item, ticked to match the system
 
--- The built app (see scripts/build.command) is a stay-open menu bar app: launching
--- it only puts an icon in the menu bar, and the icon's menu runs the cascade.
--- Run from source with osascript, there is no Info.plist flag, so it cascades once.
+-- ===========================================================================
+-- App lifecycle
+-- ===========================================================================
+
+-- The built app is a stay-open menu bar app (LSUIElement set by build_app.sh):
+-- launching it only installs the menu bar item. Run from source with
+-- osascript there is no such Info.plist flag, so it opens the picker once.
 on run
 	set isMenuBarApp to false
 	try
@@ -43,237 +63,484 @@ on run
 	if isMenuBarApp then
 		if statusItem is missing value then my performSelectorOnMainThread:"setupStatusItem:" withObject:(missing value) waitUntilDone:true
 	else
-		my cascadeWindows()
+		my cascadeWithPicker()
 	end if
 end run
 
--- Launching the app again (Finder, Spotlight) while it is running opens the picker
+-- Launching the app again (Finder, Spotlight) while it is running opens the
+-- picker; useful when the menu bar icon is hidden behind the notch.
 on reopen
-	my cascadeWindows()
+	my cascadeWithPicker()
 end reopen
 
--- ---------------------------------------------------------------------------
--- Menu bar item: "Cascade Windows..." and "Quit Cascade"
--- ---------------------------------------------------------------------------
+-- ===========================================================================
+-- Menu bar item
+-- ===========================================================================
+
+-- Main-thread entry point. Creates the status item and its menu. The menu is
+-- not attached to the item permanently: an attached menu opens on mouse-down
+-- and the button never reports clicks, so double-click could not be detected.
+-- Instead the button sends statusItemClicked: and we attach the menu on demand.
 on setupStatusItem:arg
 	try
 		set statusItem to current application's NSStatusBar's systemStatusBar()'s statusItemWithLength:-1 -- NSVariableStatusItemLength
+		set btn to statusItem's button()
 		set img to current application's NSImage's imageWithSystemSymbolName:"macwindow.on.rectangle" accessibilityDescription:"Cascade"
 		if img is missing value then
-			statusItem's button()'s setTitle:"Cascade"
+			btn's setTitle:"Cascade"
 		else
 			img's setTemplate:true -- follows light / dark menu bar
-			statusItem's button()'s setImage:img
+			btn's setImage:img
 		end if
-		statusItem's button()'s setToolTip:"Cascade windows"
+		btn's setToolTip:"Cascade - double-click to cascade all windows, right-click for options"
+		btn's setTarget:me
+		btn's setAction:"statusItemClicked:"
+		btn's sendActionOn:20 -- NSEventMaskLeftMouseUp (4) + NSEventMaskRightMouseUp (16)
 		
-		set theMenu to current application's NSMenu's alloc()'s init()
-		set cascadeItem to current application's NSMenuItem's alloc()'s initWithTitle:"Cascade Windows..." action:"cascadeFromMenu:" keyEquivalent:""
-		cascadeItem's setTarget:me
-		theMenu's addItem:cascadeItem
-		theMenu's addItem:(current application's NSMenuItem's separatorItem())
-		set quitItem to current application's NSMenuItem's alloc()'s initWithTitle:"Quit Cascade" action:"quitFromMenu:" keyEquivalent:"q"
-		quitItem's setTarget:me
-		theMenu's addItem:quitItem
-		statusItem's setMenu:theMenu
+		set statusMenu to current application's NSMenu's alloc()'s init()
+		statusMenu's setDelegate:me -- menuDidClose: detaches it again
+		statusMenu's addItem:(my newMenuItem("Select Windows...", "selectWindowsFromMenu:", ""))
+		set sizeMenuItem to my newMenuItem("Size...", "sizeFromMenu:", "")
+		statusMenu's addItem:sizeMenuItem
+		statusMenu's addItem:(current application's NSMenuItem's separatorItem())
+		set startupMenuItem to my newMenuItem("Run at Startup", "toggleStartupFromMenu:", "")
+		statusMenu's addItem:startupMenuItem
+		statusMenu's addItem:(current application's NSMenuItem's separatorItem())
+		statusMenu's addItem:(my newMenuItem("Quit Cascade", "quitFromMenu:", "q"))
 	on error m
 		display alert "Cascade failed" message "Couldn't create the menu bar item: " & m as critical
 	end try
 end setupStatusItem:
 
-on cascadeFromMenu:sender
-	my cascadeWindows()
-end cascadeFromMenu:
+-- Returns an NSMenuItem whose action is a handler in this script
+on newMenuItem(itemTitle, actionName, keyEq)
+	set mi to current application's NSMenuItem's alloc()'s initWithTitle:itemTitle action:actionName keyEquivalent:keyEq
+	mi's setTarget:me
+	return mi
+end newMenuItem
+
+-- Button action, on every left or right mouse-up on the icon.
+--   right-click, or Control + left-click -> menu now
+--   left double-click                     -> cascade all
+--   left single click                     -> menu after the double-click interval,
+--                                            unless a second click cancels it
+on statusItemClicked:sender
+	try
+		set ev to current application's NSApp's currentEvent()
+		if ev is missing value then
+			my showStatusMenu()
+			return
+		end if
+		set evType to (ev's |type|()) as integer
+		set flags to (ev's modifierFlags()) as integer
+		-- AppleScript has no bitwise AND: NSEventModifierFlagControl is 1 << 18 (262144)
+		set controlDown to ((flags div 262144) mod 2) is 1
+		
+		if evType is 4 or controlDown then -- 4 = NSEventTypeRightMouseUp
+			current application's NSObject's cancelPreviousPerformRequestsWithTarget:me
+			my showStatusMenu()
+		else if ((ev's clickCount()) as integer) is 2 then
+			current application's NSObject's cancelPreviousPerformRequestsWithTarget:me
+			my cascadeAll()
+		else if ((ev's clickCount()) as integer) is 1 then
+			my performSelector:"singleClickTimerFired:" withObject:(missing value) afterDelay:(current application's NSEvent's doubleClickInterval())
+		end if
+	on error m number n
+		display alert "Cascade failed" message m & " (" & n & ")" as critical
+	end try
+end statusItemClicked:
+
+-- No second click arrived in time: it was a single click
+on singleClickTimerFired:arg
+	my showStatusMenu()
+end singleClickTimerFired:
+
+-- Refresh the menu, attach it and open it under the icon. It is detached
+-- again in menuDidClose: so the next click goes to statusItemClicked:.
+on showStatusMenu()
+	my refreshMenu()
+	statusItem's setMenu:statusMenu
+	statusItem's button()'s performClick:(missing value)
+end showStatusMenu
+
+-- NSMenuDelegate
+on menuDidClose:theMenu
+	statusItem's setMenu:(missing value)
+end menuDidClose:
+
+-- Show the current size in the Size item and tick Run at Startup to match the system
+on refreshMenu()
+	sizeMenuItem's setTitle:("Size (" & my loadSize() & ")...")
+	if my isRunAtStartupEnabled() then
+		startupMenuItem's setState:1 -- NSControlStateValueOn
+	else
+		startupMenuItem's setState:0
+	end if
+end refreshMenu
+
+on selectWindowsFromMenu:sender
+	my cascadeWithPicker()
+end selectWindowsFromMenu:
+
+on sizeFromMenu:sender
+	my askForSize()
+end sizeFromMenu:
+
+on toggleStartupFromMenu:sender
+	my setRunAtStartup(not (my isRunAtStartupEnabled()))
+end toggleStartupFromMenu:
 
 on quitFromMenu:sender
 	tell me to quit
 end quitFromMenu:
 
--- ---------------------------------------------------------------------------
--- Enumerate windows, show the picker, cascade the chosen ones per display
--- ---------------------------------------------------------------------------
-on cascadeWindows()
+-- A menu bar app is never frontmost on its own; bring it forward so dialogs
+-- get keyboard focus and don't open behind other windows.
+on bringToFront()
 	try
-		-- A menu bar app is never frontmost on its own; bring it forward so the
-		-- picker gets keyboard focus
 		current application's NSApp's activateIgnoringOtherApps:true
-		activate
-		
-		-- ---------------------------------------------------------------
-		-- 1. Collect all visible windows from non-background apps
-		-- ---------------------------------------------------------------
-		set windowLabels to {}
-		set windowPids to {}
-		set windowIdx to {}
-		set windowTitles to {}
-		set firstWinErr to "" -- why a window list couldn't be read (usually missing Accessibility)
-		
-		tell application "System Events"
-			set procList to every application process whose background only is false and visible is true
-			repeat with p in procList
-				set pName to name of p
-				set pid to unix id of p
-				set winList to {}
-				try
-					set winList to every window of p
-				on error m number n
-					if firstWinErr is "" then set firstWinErr to pName & ": " & m & " (" & n & ")"
-				end try
-				set i to 0
-				repeat with w in winList
-					set i to i + 1
-					set wTitle to ""
-					try
-						set wTitle to name of w
-					end try
-					if wTitle is missing value then set wTitle to ""
-					set shownTitle to wTitle
-					if shownTitle is "" then set shownTitle to "(untitled)"
-					set end of windowLabels to pName & " - " & shownTitle
-					set end of windowPids to pid
-					set end of windowIdx to i
-					set end of windowTitles to wTitle
-				end repeat
-			end repeat
-		end tell
-		
-		if (count of windowLabels) is 0 then
-			set msg to "Couldn't see any open windows. Make sure the app running this script has Accessibility permission (System Settings > Privacy & Security > Accessibility). After a rebuild, remove Cascade from that list with the minus button and add it again."
-			if firstWinErr is not "" then set msg to msg & return & return & "First error: " & firstWinErr
-			set r to display alert "No windows found" message msg as warning buttons {"OK", "Open Accessibility Settings"} default button "Open Accessibility Settings"
-			if button returned of r is "Open Accessibility Settings" then open location "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+	end try
+	activate
+end bringToFront
+
+-- ===========================================================================
+-- Cascading
+-- ===========================================================================
+
+-- Menu > Select Windows... (and reopen, and osascript): collect, pick, cascade
+on cascadeWithPicker()
+	try
+		my bringToFront()
+		set wins to my collectWindows()
+		if (count of (labels of wins)) is 0 then
+			my showNoWindowsAlert(firstErr of wins)
 			return
 		end if
 		
-		-- ---------------------------------------------------------------
-		-- 2. One dialog: checklist + size field + Cascade button
-		-- ---------------------------------------------------------------
 		-- AppKit windows must be created on the main thread. Script Editor runs
 		-- scripts on a background thread, so hop over and wait for the result.
-		set pickerLabels to windowLabels
+		set pickerLabels to labels of wins
+		set pickerSize to my loadSize()
 		set pickerResult to missing value
 		my performSelectorOnMainThread:"showPickerOnMainThread:" withObject:(missing value) waitUntilDone:true
 		set picked to pickerResult
 		if picked is missing value then return -- Cancel
-		set chosenIdx to item 1 of picked
-		set winW to item 2 of picked
-		set winH to item 3 of picked
 		
-		-- ---------------------------------------------------------------
-		-- 3. Cascade, per display
-		-- ---------------------------------------------------------------
-		set screenList to my getScreens()
-		
-		-- One cascade cursor per display
-		set curX to {}
-		set curY to {}
-		set wraps to {}
-		repeat with s in screenList
-			set end of curX to (vl of s) + marginX
-			set end of curY to (vt of s) + marginY
-			set end of wraps to 0
-		end repeat
-		
-		-- Raising a window moves it to index 1 of its app, shifting the others.
-		-- Remember what we've raised so later lookups by index can compensate.
-		set raisedPids to {}
-		set raisedIdx to {}
-		
-		set failures to {}
-		
-		repeat with idxRef in chosenIdx
-			set idx to idxRef as integer
-			set lblText to item idx of windowLabels
-			set pid to item idx of windowPids
-			set wi to item idx of windowIdx
-			set wTitle to item idx of windowTitles
-			
-			try
-				-- How many windows of this app with a higher original index have we raised?
-				set shiftCount to 0
-				repeat with r from 1 to count of raisedPids
-					if (item r of raisedPids) is pid and (item r of raisedIdx) > wi then set shiftCount to shiftCount + 1
-				end repeat
-				
-				set theWin to my findWindow(pid, wi, wTitle, shiftCount)
-				
-				-- Find the window's centre so we know which display it lives on
-				set cx to 0
-				set cy to 0
-				tell application "System Events"
-					try
-						set {px, py} to position of theWin
-						set {pw, ph} to size of theWin
-						set cx to px + (pw div 2)
-						set cy to py + (ph div 2)
-					end try
-				end tell
-				set k to my screenIndexForPoint(cx, cy, screenList)
-				set s to item k of screenList
-				set vRight to (vl of s) + (vw of s)
-				set vBottom to (vt of s) + (vh of s)
-				
-				-- Don't let the window be bigger than the display it's on
-				set w2 to winW
-				set h2 to winH
-				if w2 > (vw of s) - (marginX * 2) then set w2 to (vw of s) - (marginX * 2)
-				if h2 > (vh of s) - (marginY * 2) then set h2 to (vh of s) - (marginY * 2)
-				
-				set x to item k of curX
-				set y to item k of curY
-				
-				-- If the next window would run off this display, start a new cascade column
-				if (x + w2 > vRight) or (y + h2 > vBottom) then
-					set item k of wraps to (item k of wraps) + 1
-					set x to (vl of s) + marginX + ((item k of wraps) * stepX * 3)
-					set y to (vt of s) + marginY
-					if x + w2 > vRight then set x to (vl of s) + marginX
-				end if
-				
-				-- Move first, then resize, then nudge back into place (some apps
-				-- clamp or shift on resize). Each step is independent so one
-				-- failing doesn't stop the others.
-				set errText to ""
-				tell application "System Events"
-					try
-						set position of theWin to {x, y}
-					on error m
-						set errText to "move: " & m
-					end try
-					try
-						set size of theWin to {w2, h2}
-						set position of theWin to {x, y}
-					on error m
-						if errText is "" then set errText to "resize: " & m
-					end try
-					try
-						perform action "AXRaise" of theWin
-						set end of raisedPids to pid
-						set end of raisedIdx to wi
-					end try
-				end tell
-				if errText is not "" then set end of failures to lblText & " -> " & errText
-				
-				set item k of curX to x + stepX
-				set item k of curY to y + stepY
-				
-			on error m
-				set end of failures to lblText & " -> " & m
-			end try
-		end repeat
-		
-		if (count of failures) > 0 then
-			set AppleScript's text item delimiters to return
-			set failText to failures as text
-			set AppleScript's text item delimiters to ""
-			display alert "Some windows couldn't be cascaded" message failText as warning
-		end if
-		
+		my cascadeChosen(wins, item 1 of picked, item 2 of picked, item 3 of picked)
 	on error errMsg number errNum
 		if errNum is -128 then return -- user pressed Cancel
 		display alert "Cascade failed" message errMsg & " (" & errNum & ")" as critical
 	end try
-end cascadeWindows
+end cascadeWithPicker
+
+-- Double-click on the icon: cascade every window at the saved size, no dialog.
+-- Doesn't activate Cascade unless an alert has to be shown, so keyboard focus
+-- stays with the app you were using.
+on cascadeAll()
+	try
+		set wins to my collectWindows()
+		set n to count of (labels of wins)
+		if n is 0 then
+			my showNoWindowsAlert(firstErr of wins)
+			return
+		end if
+		set dims to my parseSize(my loadSize()) -- loadSize only returns valid sizes
+		set chosenIdx to {}
+		repeat with i from 1 to n
+			set end of chosenIdx to i
+		end repeat
+		my cascadeChosen(wins, chosenIdx, item 1 of dims, item 2 of dims)
+	on error errMsg number errNum
+		my bringToFront()
+		display alert "Cascade failed" message errMsg & " (" & errNum & ")" as critical
+	end try
+end cascadeAll
+
+-- Lists every window of every visible, non-background app via System Events.
+-- Returns {labels, pids, idx, titles, firstErr}: parallel lists with the
+-- "App - Title" label, the process's unix id, the window's index in its app,
+-- and its title ("" if none); firstErr is the first error hit while reading
+-- a window list (usually missing Accessibility permission), or "".
+on collectWindows()
+	set windowLabels to {}
+	set windowPids to {}
+	set windowIdx to {}
+	set windowTitles to {}
+	set firstWinErr to ""
+	
+	tell application "System Events"
+		set procList to every application process whose background only is false and visible is true
+		repeat with p in procList
+			set pName to name of p
+			set pid to unix id of p
+			set winList to {}
+			try
+				set winList to every window of p
+			on error m number n
+				if firstWinErr is "" then set firstWinErr to pName & ": " & m & " (" & n & ")"
+			end try
+			set i to 0
+			repeat with w in winList
+				set i to i + 1
+				set wTitle to ""
+				try
+					set wTitle to name of w
+				end try
+				if wTitle is missing value then set wTitle to ""
+				set shownTitle to wTitle
+				if shownTitle is "" then set shownTitle to "(untitled)"
+				set end of windowLabels to pName & " - " & shownTitle
+				set end of windowPids to pid
+				set end of windowIdx to i
+				set end of windowTitles to wTitle
+			end repeat
+		end repeat
+	end tell
+	return {labels:windowLabels, pids:windowPids, idx:windowIdx, titles:windowTitles, firstErr:firstWinErr}
+end collectWindows
+
+-- Shown when collectWindows() found nothing; errText is its firstErr
+on showNoWindowsAlert(errText)
+	my bringToFront()
+	set msg to "Couldn't see any open windows. Make sure Cascade has Accessibility permission (System Settings > Privacy & Security > Accessibility). After a rebuild, remove Cascade from that list with the minus button and add it again."
+	if errText is not "" then set msg to msg & return & return & "First error: " & errText
+	set r to display alert "No windows found" message msg as warning buttons {"OK", "Open Accessibility Settings"} default button "Open Accessibility Settings"
+	if button returned of r is "Open Accessibility Settings" then open location "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+end showNoWindowsAlert
+
+-- Moves and resizes the windows at chosenIdx (indices into the lists from
+-- collectWindows) to winW x winH, one cascade per display. Errors are
+-- collected per window and shown in one summary alert at the end.
+on cascadeChosen(wins, chosenIdx, winW, winH)
+	set windowLabels to labels of wins
+	set windowPids to pids of wins
+	set windowIdx to idx of wins
+	set windowTitles to titles of wins
+	set screenList to my getScreens()
+	
+	-- One cascade cursor per display
+	set curX to {}
+	set curY to {}
+	set wraps to {}
+	repeat with s in screenList
+		set end of curX to (vl of s) + marginX
+		set end of curY to (vt of s) + marginY
+		set end of wraps to 0
+	end repeat
+	
+	-- Raising a window moves it to index 1 of its app, shifting the others.
+	-- Remember what we've raised so later lookups by index can compensate.
+	set raisedPids to {}
+	set raisedIdx to {}
+	
+	set failures to {}
+	
+	repeat with idxRef in chosenIdx
+		set i to idxRef as integer
+		set lblText to item i of windowLabels
+		set pid to item i of windowPids
+		set wi to item i of windowIdx
+		set wTitle to item i of windowTitles
+		
+		try
+			-- How many windows of this app with a higher original index have we raised?
+			set shiftCount to 0
+			repeat with r from 1 to count of raisedPids
+				if (item r of raisedPids) is pid and (item r of raisedIdx) > wi then set shiftCount to shiftCount + 1
+			end repeat
+			
+			set theWin to my findWindow(pid, wi, wTitle, shiftCount)
+			
+			-- Find the window's centre so we know which display it lives on
+			set cx to 0
+			set cy to 0
+			tell application "System Events"
+				try
+					set {px, py} to position of theWin
+					set {pw, ph} to size of theWin
+					set cx to px + (pw div 2)
+					set cy to py + (ph div 2)
+				end try
+			end tell
+			set k to my screenIndexForPoint(cx, cy, screenList)
+			set s to item k of screenList
+			set vRight to (vl of s) + (vw of s)
+			set vBottom to (vt of s) + (vh of s)
+			
+			-- Don't let the window be bigger than the display it's on
+			set w2 to winW
+			set h2 to winH
+			if w2 > (vw of s) - (marginX * 2) then set w2 to (vw of s) - (marginX * 2)
+			if h2 > (vh of s) - (marginY * 2) then set h2 to (vh of s) - (marginY * 2)
+			
+			set x to item k of curX
+			set y to item k of curY
+			
+			-- If the next window would run off this display, start a new cascade column
+			if (x + w2 > vRight) or (y + h2 > vBottom) then
+				set item k of wraps to (item k of wraps) + 1
+				set x to (vl of s) + marginX + ((item k of wraps) * stepX * 3)
+				set y to (vt of s) + marginY
+				if x + w2 > vRight then set x to (vl of s) + marginX
+			end if
+			
+			-- Move first, then resize, then nudge back into place (some apps
+			-- clamp or shift on resize). Each step is independent so one
+			-- failing doesn't stop the others.
+			set errText to ""
+			tell application "System Events"
+				try
+					set position of theWin to {x, y}
+				on error m
+					set errText to "move: " & m
+				end try
+				try
+					set size of theWin to {w2, h2}
+					set position of theWin to {x, y}
+				on error m
+					if errText is "" then set errText to "resize: " & m
+				end try
+				try
+					perform action "AXRaise" of theWin
+					set end of raisedPids to pid
+					set end of raisedIdx to wi
+				end try
+			end tell
+			if errText is not "" then set end of failures to lblText & " -> " & errText
+			
+			set item k of curX to x + stepX
+			set item k of curY to y + stepY
+			
+		on error m
+			set end of failures to lblText & " -> " & m
+		end try
+	end repeat
+	
+	if (count of failures) > 0 then
+		set AppleScript's text item delimiters to return
+		set failText to failures as text
+		set AppleScript's text item delimiters to ""
+		my bringToFront()
+		display alert "Some windows couldn't be cascaded" message failText as warning
+	end if
+end cascadeChosen
+
+-- ===========================================================================
+-- Saved size
+-- ===========================================================================
+
+-- The preferences domain is always com.morgadoj.cascade (inspect it with
+-- `defaults read com.morgadoj.cascade`). Inside the app that is the standard
+-- domain; under osascript it has to be opened by name. (Opening the app's own
+-- bundle id by name from inside the app is not allowed, hence the branch.)
+on prefs()
+	set bid to current application's NSBundle's mainBundle()'s bundleIdentifier()
+	if bid is not missing value and (bid as text) is appBundleId then return current application's NSUserDefaults's standardUserDefaults()
+	return current application's NSUserDefaults's alloc()'s initWithSuiteName:appBundleId
+end prefs
+
+-- The saved size as text, e.g. "1200x800"; defaultSize if none is saved or the
+-- saved value doesn't parse, so a bad value can never break a cascade.
+on loadSize()
+	try
+		set v to (my prefs()'s stringForKey:sizeKey)
+		if v is not missing value then
+			set t to v as text
+			if my parseSize(t) is not missing value then return t
+		end if
+	end try
+	return defaultSize
+end loadSize
+
+on saveSize(t)
+	my prefs()'s setObject:t forKey:sizeKey
+end saveSize
+
+-- Menu > Size...: ask for a new size, validate it, save it. Loops on invalid
+-- input; Cancel leaves the saved size unchanged.
+on askForSize()
+	my bringToFront()
+	set sizeText to my loadSize()
+	set prompt to "Window size for cascading (W x H)." & return & "Double-click the menu bar icon to cascade all windows at this size."
+	repeat
+		try
+			set r to display dialog prompt default answer sizeText buttons {"Cancel", "Save"} default button "Save" cancel button "Cancel" with title "Cascade"
+		on error number -128
+			return
+		end try
+		set sizeText to text returned of r
+		set dims to my parseSize(sizeText)
+		if dims is missing value then
+			set prompt to "Enter the size as width x height, for example 1200x800 (minimum 100x100)."
+		else
+			my saveSize((item 1 of dims as text) & "x" & (item 2 of dims as text))
+			return
+		end if
+	end repeat
+end askForSize
+
+-- ===========================================================================
+-- Run at Startup
+-- ===========================================================================
+-- Primary: SMAppService's mainAppService (macOS 13+), which lists Cascade
+-- under System Settings > General > Login Items. If registering fails (for
+-- example because of the ad-hoc signature), fall back to a LaunchAgent in
+-- ~/Library/LaunchAgents that runs `open -a <this app>` at login.
+
+on launchAgentPath()
+	return (POSIX path of (path to home folder)) & "Library/LaunchAgents/" & appBundleId & ".login.plist"
+end launchAgentPath
+
+-- True if either mechanism is set up. SMAppService status: 0 not registered,
+-- 1 enabled, 2 requires approval (registered, waiting for the user), 3 not found.
+on isRunAtStartupEnabled()
+	try
+		set svcStatus to ((current application's SMAppService's mainAppService()'s status()) as integer)
+		if svcStatus is 1 or svcStatus is 2 then return true
+	end try
+	return ((current application's NSFileManager's defaultManager()'s fileExistsAtPath:(my launchAgentPath())) as boolean)
+end isRunAtStartupEnabled
+
+-- Turns Run at Startup on or off. Every failure ends in an alert.
+on setRunAtStartup(enable)
+	set svc to current application's SMAppService's mainAppService()
+	if enable then
+		set {ok, theError} to svc's registerAndReturnError:(reference)
+		if ok as boolean then
+			if ((svc's status()) as integer) is 2 then
+				my bringToFront()
+				display alert "Allow Cascade to run at startup" message "macOS needs your approval. In Login Items, switch Cascade on under \"Open at Login\" or \"Allow in the Background\"." as informational
+				current application's SMAppService's openSystemSettingsLoginItems()
+			end if
+			return
+		end if
+		-- SMAppService refused: use a LaunchAgent instead
+		set smErr to "unknown error"
+		if theError is not missing value then set smErr to (theError's localizedDescription()) as text
+		set appPath to (current application's NSBundle's mainBundle()'s bundlePath()) as text
+		set agent to current application's NSDictionary's dictionaryWithDictionary:{|Label|:appBundleId & ".login", |ProgramArguments|:{"/usr/bin/open", "-a", appPath}, |RunAtLoad|:true}
+		set agentDir to (POSIX path of (path to home folder)) & "Library/LaunchAgents"
+		current application's NSFileManager's defaultManager()'s createDirectoryAtPath:agentDir withIntermediateDirectories:true attributes:(missing value) |error|:(missing value)
+		if not ((agent's writeToFile:(my launchAgentPath()) atomically:true) as boolean) then
+			my bringToFront()
+			display alert "Couldn't turn on Run at Startup" message "Login item: " & smErr & return & "LaunchAgent: couldn't write " & my launchAgentPath() as critical
+		end if
+	else
+		set failText to ""
+		if ((svc's status()) as integer) is not 0 then
+			set {ok, theError} to svc's unregisterAndReturnError:(reference)
+			if not (ok as boolean) and theError is not missing value then set failText to "Login item: " & ((theError's localizedDescription()) as text)
+		end if
+		set fm to current application's NSFileManager's defaultManager()
+		if (fm's fileExistsAtPath:(my launchAgentPath())) as boolean then
+			if not ((fm's removeItemAtPath:(my launchAgentPath()) |error|:(missing value)) as boolean) then set failText to failText & return & "LaunchAgent: couldn't remove " & my launchAgentPath()
+		end if
+		if failText is not "" then
+			my bringToFront()
+			display alert "Couldn't turn off Run at Startup" message failText as critical
+		end if
+	end if
+end setRunAtStartup
 
 -- ---------------------------------------------------------------------------
 -- The picker dialog: an NSAlert whose accessory view holds a scrolling
@@ -326,7 +593,7 @@ on showPicker(windowLabels)
 	set sizeLabel to current application's NSTextField's labelWithString:"Size (W x H):"
 	sizeLabel's setFrame:{{2, 9}, {96, 20}}
 	set sizeField to current application's NSTextField's alloc()'s initWithFrame:{{98, 6}, {120, 24}}
-	sizeField's setStringValue:defaultSize
+	sizeField's setStringValue:pickerSize
 	
 	-- All / None -------------------------------------------------------------
 	set allBtn to current application's NSButton's alloc()'s initWithFrame:{{panelW - 168, 3}, {80, 30}}
