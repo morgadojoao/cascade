@@ -102,3 +102,7 @@ Fixed: Run at Startup counted "requires approval" (status 2) as on, so after swi
 ### QA
 
 All automated and manual cases in `docs/QA_v7.md` pass. Run at Startup registered through SMAppService (no LaunchAgent written). The user installed into `~/Applications`; after Quit the signature still verifies and `main.scpt` is unchanged, so the applet does not write its properties back.
+
+## v7.1 - no menu on single click
+
+At the user's request the delayed single-click menu (D1) was removed: a single left click now does nothing, right-click or Control-click opens the menu, double-click still cascades all. `singleClickTimerFired:` and the `performSelector:afterDelay:` / `cancelPreviousPerformRequestsWithTarget:` calls are gone.

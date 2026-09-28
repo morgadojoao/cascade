@@ -6,8 +6,7 @@
 --
 -- Menu bar icon:
 --   double-click          cascade every window at the saved size, no dialog
---   right / Control-click open the menu (a plain click opens it after a short
---                         pause, so a double-click can be told apart)
+--   right / Control-click open the menu (a single left click does nothing)
 -- Menu:
 --   Select Windows...     checklist of windows + size field, then cascade
 --   Size (WxH)...         change the saved size used by double-click
@@ -137,8 +136,7 @@ end newMenuItem
 -- Button action, on every left or right mouse-up on the icon (main thread).
 --   right-click, or Control + left-click -> menu now
 --   left double-click                     -> cascade all
---   left single click                     -> menu after the double-click interval,
---                                            unless a second click cancels it
+--   left single click                     -> nothing
 --   anything else (VoiceOver, keyboard)   -> menu now
 on statusItemClicked:sender
 	try
@@ -153,30 +151,16 @@ on statusItemClicked:sender
 		set controlDown to ((flags div 262144) mod 2) is 1
 		
 		if evType is 4 or controlDown then -- 4 = NSEventTypeRightMouseUp
-			current application's NSObject's cancelPreviousPerformRequestsWithTarget:me
 			my showStatusMenu()
 		else if evType is not 2 then -- 2 = NSEventTypeLeftMouseUp; clickCount() is only valid for mouse events
 			my showStatusMenu()
 		else if ((ev's clickCount()) as integer) is 2 then
-			current application's NSObject's cancelPreviousPerformRequestsWithTarget:me
 			my cascadeAll()
-		else if ((ev's clickCount()) as integer) is 1 then
-			my performSelector:"singleClickTimerFired:" withObject:(missing value) afterDelay:(current application's NSEvent's doubleClickInterval())
 		end if
 	on error m number n
 		my showError(m, n)
 	end try
 end statusItemClicked:
-
--- Timer from statusItemClicked: (main run loop). No second click arrived in
--- time, so it was a single click: open the menu.
-on singleClickTimerFired:arg
-	try
-		my showStatusMenu()
-	on error m number n
-		my showError(m, n)
-	end try
-end singleClickTimerFired:
 
 -- Refresh the menu, attach it and open it under the icon (main thread). It is
 -- detached again in menuDidClose: so the next click goes to statusItemClicked:.
@@ -261,7 +245,7 @@ on bringToFront()
 end bringToFront
 
 -- The generic "Cascade failed" alert for unexpected errors (m = message,
--- n = number). Main thread: every caller is a menu, button or timer handler.
+-- n = number). Main thread: every caller is a menu or button handler.
 on showError(m, n)
 	my bringToFront()
 	display alert "Cascade failed" message m & " (" & n & ")" as critical

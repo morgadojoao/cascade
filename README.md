@@ -15,7 +15,7 @@ The app is signed ad hoc, not with an Apple Developer ID. On a Mac other than th
 | On the menu bar icon | What happens |
 |---|---|
 | Double-click | Cascades every window at the saved size, no dialog |
-| Right-click, Control-click, or a single click | Opens the menu (a single click opens it after a short pause, so a double-click can be told apart) |
+| Right-click or Control-click | Opens the menu |
 
 The menu:
 
