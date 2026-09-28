@@ -1,6 +1,6 @@
 # CLAUDE.md — Cascade
 
-A macOS utility, written in AppleScript + AppleScriptObjC, that shows one dialog listing every open window, lets the user tick the ones they want and enter a size, then cascades the ticked windows diagonally **on whichever display each window is already on**. It is built into a standalone `.app` with `osacompile`.
+A macOS utility, written in AppleScript + AppleScriptObjC, that shows one dialog listing every open window, lets the user tick the ones they want and enter a size, then cascades the ticked windows diagonally **on whichever display each window is already on**. It is built into a stay-open menu bar `.app` (no Dock icon) with `osacompile -s`.
 
 Status as of 2026-09-28: **working and user-approved ("perfect")**. Read `docs/DEVELOPMENT_LOG.md` before changing anything; every design choice in the script exists because something simpler broke.
 
@@ -54,7 +54,10 @@ Permissions: the compiled app needs its own Accessibility grant (System Settings
 
 ## Script structure (handlers)
 
-- `on run` — enumerate windows via System Events, call picker on main thread, then cascade per display.
+- `on run` — if Info.plist has `LSUIElement` (set by build.command), install the menu bar item via `setupStatusItem:` on the main thread and stay open; otherwise (plain `osascript`) call `cascadeWindows()` once.
+- `on reopen` — relaunching the running app calls `cascadeWindows()`.
+- `setupStatusItem:` / `cascadeFromMenu:` / `quitFromMenu:` — NSStatusItem (SF Symbol `macwindow.on.rectangle`, template) held in property `statusItem`, menu "Cascade Windows..." and "Quit Cascade".
+- `cascadeWindows()` — activates the app, enumerates windows via System Events, calls picker on main thread, then cascades per display.
 - `showPickerOnMainThread:` — main-thread wrapper; reads `pickerLabels`, writes `pickerResult`.
 - `showPicker(labels)` — builds the NSAlert: NSScrollView of checkbox NSButtons, "Size (W x H)" NSTextField, All/None NSButtons (target `me`, actions `selectAllWindows:` / `selectNoWindows:`), buttons "Cascade" (return code 1000) and "Cancel". Loops on invalid size / empty selection.
 - `findWindow(pid, wi, wTitle, shiftCount)` — robust window resolution.

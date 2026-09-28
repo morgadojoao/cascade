@@ -1,6 +1,6 @@
 # Cascade
 
-A small macOS app that tidies your windows. Click the icon, tick the windows you want, enter a size, and press **Cascade**. The windows are resized and stacked diagonally from the top-left corner of the display each one is already on.
+A small macOS menu bar app that tidies your windows. Click its icon in the menu bar, choose **Cascade Windows...**, tick the windows you want, enter a size, and press **Cascade**. The windows are resized and stacked diagonally from the top-left corner of the display each one is already on.
 
 ## Install
 
@@ -10,7 +10,8 @@ A small macOS app that tidies your windows. Click the icon, tick the windows you
    ```
    This builds `~/Applications/Cascade.app` and launches it.
 2. Allow **Cascade** in System Settings > Privacy & Security > Accessibility, then launch it again.
-3. Drag `Cascade.app` to your Dock for one-click access.
+3. Cascade now sits in the menu bar (stacked-windows icon, near the clock) and has no Dock icon. Choose **Quit Cascade** from its menu to remove it.
+4. To have it there after every restart, add `Cascade.app` in System Settings > General > Login Items.
 
 ## Use
 
@@ -25,6 +26,7 @@ Edit the properties at the top of `cascade.applescript` (`defaultSize`, `stepX`,
 
 ## Troubleshooting
 
+- **No menu bar icon:** the menu bar may be full (icons hide behind the notch). Quit a few other menu bar apps, or relaunch Cascade, which opens the picker directly.
 - **Nothing moves:** the app needs Accessibility permission. After rebuilding, switch it off and on again in System Settings.
 - **Build fails with a syntax error:** a non-ASCII character got into the source, usually from saving in Script Editor. See `docs/APPLESCRIPT_GOTCHAS.md`.
 

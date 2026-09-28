@@ -67,3 +67,16 @@ User confirmed the script works ("It's perfect now") and asked how to run it wit
 Answer: `osacompile -o ~/Applications/"Cascade.app" cascade.applescript`, then grant the app Accessibility permission on first run and drag it to the Dock. Optional global hotkey via Shortcuts app: an "Open App" action pointing at the app, with a keyboard shortcut assigned in the shortcut's details pane.
 
 The user wrote `scripts/build.command` (a double-clickable zsh script) that removes any previous build, runs `osacompile` into `~/Applications`, launches the app, opens the folder, and prints the permission reminder. It has been adjusted to `cd` to the repo root so it works from `scripts/`.
+
+## v6 - icon, git, menu bar app
+
+- Custom icon: `scripts/make_icon.swift` renders `assets/Cascade.icns`. build.command copies it over `applet.icns`, deletes `Assets.car` and `CFBundleIconName` (otherwise macOS keeps showing the default script icon), sets `CFBundleIdentifier` to `com.morgadoj.cascade`, and re-signs ad hoc because editing the bundle invalidates osacompile's signature.
+- `build.command` was committed without the execute bit and Finder refused to run it ("could not be executed because you do not have appropriate access privileges"). Fixed with `chmod u+x`; git tracks it as 100755.
+- Request: "live in the mac top bar". The app is now compiled stay-open (`osacompile -s`) with `LSUIElement` true (no Dock icon). `on run` installs an `NSStatusItem` whose menu calls `cascadeFromMenu:` (target `me`, same dispatch mechanism as the All / None buttons). The old `on run` body is now `cascadeWindows()`, which starts with `NSApp's activateIgnoringOtherApps:true` because an LSUIElement app is never frontmost by itself and the picker would otherwise open without keyboard focus. When there is no `LSUIElement` flag (running the source with osascript) it cascades once as before. build.command quits a running copy before replacing it.
+- Not yet tested by the user.
+
+### Bug: "No windows found" although Cascade.app is ticked in Accessibility
+
+Cause (most likely): the app is signed ad hoc, so the TCC grant is pinned to that build's code hash. After a rebuild the list still shows Cascade as on, but the grant no longer matches the new binary. System Events still lists processes, then `every window of p` fails for each one; that error was swallowed, so the user only saw "No windows found".
+
+Fix: the first window-read error is now included in the alert, with a button that opens the Accessibility settings pane. build.command runs `tccutil reset Accessibility com.morgadoj.cascade` after signing so each build asks for permission again cleanly. Immediate workaround: remove Cascade from the list with the minus button and add it again (or run the tccutil reset once).

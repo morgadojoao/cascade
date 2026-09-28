@@ -7,7 +7,11 @@ Open items, unverified fixes, and ideas. Nothing here is committed work; the scr
 - **Electron windows (Claude desktop, Microsoft Teams).** In v2 these two windows did not move. v3 changed lookup to pid+title, split move/resize into independent steps, and added the failure summary. The user has not reported the problem since and called the final build "perfect", but never explicitly confirmed those two apps now cascade. If they still fail, the summary alert will name the failing step; likely next moves are `set frontmost of process to true` before positioning, or a short `delay 0.1` between move and resize.
 - **All / None buttons in the compiled app.** They rely on `setTarget:me` / `setAction:` dispatching back into the script. This worked in the tested run but is the part most sensitive to how the script is hosted. Re-check after any change to how the picker is invoked.
 
+- **Menu bar mode (v6).** Untested on the user's machine. Things to check: the icon appears; the menu item opens the picker with keyboard focus (Return / Escape work); All / None still work; Quit Cascade quits; the failure summary still shows. If the picker opens behind other windows, the `activateIgnoringOtherApps:` call is the place to look.
+
 ## Ideas (not requested)
+
+- Start at login automatically (`SMAppService` is not reachable from an applet; for now the user adds it in Login Items).
 
 - Remember the last-used size across runs (write to `~/Library/Preferences` or a plist via `NSUserDefaults`), so `defaultSize` becomes a first-run default only.
 - Per-app filter or "only this display" toggle in the picker.

@@ -21,6 +21,12 @@ fi
 
 mkdir -p "$DEST_DIR"
 
+# Quit a running copy (it stays open in the menu bar) before replacing it
+if pgrep -f "Cascade.app/Contents/MacOS/applet" >/dev/null; then
+  osascript -e 'tell application id "'"$BUNDLE_ID"'" to quit' 2>/dev/null || true
+  sleep 1
+fi
+
 # Remove any previous build so macOS doesn't get confused about permissions
 if [[ -d "$APP" ]]; then
   echo "Replacing existing app at: $APP"
@@ -28,7 +34,8 @@ if [[ -d "$APP" ]]; then
 fi
 
 echo "Compiling $SRC ..."
-osacompile -o "$APP" "$SRC"
+# -s = stay-open applet, so it keeps running in the menu bar
+osacompile -s -o "$APP" "$SRC"
 
 # Custom icon. osacompile ships its default icon in Assets.car, which macOS
 # prefers over applet.icns, so drop it and point Info.plist at the .icns.
@@ -49,8 +56,18 @@ rm -f "$APP/Contents/Resources/Assets.car"
 /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string Cascade" "$PLIST" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string 1.0" "$PLIST" 2>/dev/null || true
 
+# Menu bar app: no Dock icon. The script checks this flag to decide whether to
+# install its menu bar item or just cascade once.
+/usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$PLIST"
+
 # Editing the bundle broke osacompile's ad-hoc signature; re-sign it.
 codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP"
+
+# The app is signed ad hoc, so macOS ties the Accessibility grant to this exact
+# binary. After a rebuild the old grant still shows as "on" but no longer
+# applies. Clear it so the new build asks for permission again.
+tccutil reset Accessibility "$BUNDLE_ID" >/dev/null 2>&1 || true
 
 # Make Finder and the Dock pick up the new icon
 touch "$APP"
@@ -59,9 +76,10 @@ touch "$APP"
 echo ""
 echo "Built: $APP"
 echo ""
-echo "Launching it now. On first run macOS will ask you to grant the app"
-echo "Accessibility permission (System Settings > Privacy & Security > Accessibility)."
-echo "Once granted, you can drag the app to your Dock for one-click access."
+echo "Launching it now. Every build needs Accessibility permission again:"
+echo "choose Cascade Windows... from the menu bar icon, allow Cascade when asked"
+echo "(System Settings > Privacy & Security > Accessibility), then try again."
+echo "To start it at login, add it in System Settings > General > Login Items."
 echo ""
 
 open "$APP"

@@ -8,9 +8,9 @@
 -- Windows are raised in turn so the last one in the list ends up on top.
 -- If any window couldn't be moved, a summary is shown at the end.
 --
--- Run it with:   osascript ~/path/to/cascade.applescript
--- or open it in Script Editor and use File > Export... > File Format: Application
--- to get a double-clickable app.
+-- Build it with scripts/build.command to get Cascade.app, which lives in the
+-- menu bar (click the icon > Cascade Windows...). Running the source directly
+-- with osascript cascades once and exits.
 --
 -- Requires Accessibility permission for whatever runs it (Terminal, Script Editor,
 -- or the exported app): System Settings > Privacy & Security > Accessibility.
@@ -29,8 +29,74 @@ property checkBoxes : {} -- the checklist controls, so the All / None buttons ca
 property pickerLabels : {} -- input to the picker (set before hopping to the main thread)
 property pickerResult : missing value -- output of the picker (read after the hop)
 
+property statusItem : missing value -- the menu bar item; kept here so it isn't released
+
+-- The built app (see scripts/build.command) is a stay-open menu bar app: launching
+-- it only puts an icon in the menu bar, and the icon's menu runs the cascade.
+-- Run from source with osascript, there is no Info.plist flag, so it cascades once.
 on run
+	set isMenuBarApp to false
 	try
+		set flag to current application's NSBundle's mainBundle()'s objectForInfoDictionaryKey:"LSUIElement"
+		if flag is not missing value then set isMenuBarApp to (flag as boolean)
+	end try
+	if isMenuBarApp then
+		if statusItem is missing value then my performSelectorOnMainThread:"setupStatusItem:" withObject:(missing value) waitUntilDone:true
+	else
+		my cascadeWindows()
+	end if
+end run
+
+-- Launching the app again (Finder, Spotlight) while it is running opens the picker
+on reopen
+	my cascadeWindows()
+end reopen
+
+-- ---------------------------------------------------------------------------
+-- Menu bar item: "Cascade Windows..." and "Quit Cascade"
+-- ---------------------------------------------------------------------------
+on setupStatusItem:arg
+	try
+		set statusItem to current application's NSStatusBar's systemStatusBar()'s statusItemWithLength:-1 -- NSVariableStatusItemLength
+		set img to current application's NSImage's imageWithSystemSymbolName:"macwindow.on.rectangle" accessibilityDescription:"Cascade"
+		if img is missing value then
+			statusItem's button()'s setTitle:"Cascade"
+		else
+			img's setTemplate:true -- follows light / dark menu bar
+			statusItem's button()'s setImage:img
+		end if
+		statusItem's button()'s setToolTip:"Cascade windows"
+		
+		set theMenu to current application's NSMenu's alloc()'s init()
+		set cascadeItem to current application's NSMenuItem's alloc()'s initWithTitle:"Cascade Windows..." action:"cascadeFromMenu:" keyEquivalent:""
+		cascadeItem's setTarget:me
+		theMenu's addItem:cascadeItem
+		theMenu's addItem:(current application's NSMenuItem's separatorItem())
+		set quitItem to current application's NSMenuItem's alloc()'s initWithTitle:"Quit Cascade" action:"quitFromMenu:" keyEquivalent:"q"
+		quitItem's setTarget:me
+		theMenu's addItem:quitItem
+		statusItem's setMenu:theMenu
+	on error m
+		display alert "Cascade failed" message "Couldn't create the menu bar item: " & m as critical
+	end try
+end setupStatusItem:
+
+on cascadeFromMenu:sender
+	my cascadeWindows()
+end cascadeFromMenu:
+
+on quitFromMenu:sender
+	tell me to quit
+end quitFromMenu:
+
+-- ---------------------------------------------------------------------------
+-- Enumerate windows, show the picker, cascade the chosen ones per display
+-- ---------------------------------------------------------------------------
+on cascadeWindows()
+	try
+		-- A menu bar app is never frontmost on its own; bring it forward so the
+		-- picker gets keyboard focus
+		current application's NSApp's activateIgnoringOtherApps:true
 		activate
 		
 		-- ---------------------------------------------------------------
@@ -40,6 +106,7 @@ on run
 		set windowPids to {}
 		set windowIdx to {}
 		set windowTitles to {}
+		set firstWinErr to "" -- why a window list couldn't be read (usually missing Accessibility)
 		
 		tell application "System Events"
 			set procList to every application process whose background only is false and visible is true
@@ -49,6 +116,8 @@ on run
 				set winList to {}
 				try
 					set winList to every window of p
+				on error m number n
+					if firstWinErr is "" then set firstWinErr to pName & ": " & m & " (" & n & ")"
 				end try
 				set i to 0
 				repeat with w in winList
@@ -69,7 +138,10 @@ on run
 		end tell
 		
 		if (count of windowLabels) is 0 then
-			display alert "No windows found" message "Couldn't see any open windows. Make sure the app running this script has Accessibility permission (System Settings > Privacy & Security > Accessibility)." as warning
+			set msg to "Couldn't see any open windows. Make sure the app running this script has Accessibility permission (System Settings > Privacy & Security > Accessibility). After a rebuild, remove Cascade from that list with the minus button and add it again."
+			if firstWinErr is not "" then set msg to msg & return & return & "First error: " & firstWinErr
+			set r to display alert "No windows found" message msg as warning buttons {"OK", "Open Accessibility Settings"} default button "Open Accessibility Settings"
+			if button returned of r is "Open Accessibility Settings" then open location "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
 			return
 		end if
 		
@@ -201,7 +273,7 @@ on run
 		if errNum is -128 then return -- user pressed Cancel
 		display alert "Cascade failed" message errMsg & " (" & errNum & ")" as critical
 	end try
-end run
+end cascadeWindows
 
 -- ---------------------------------------------------------------------------
 -- The picker dialog: an NSAlert whose accessory view holds a scrolling
