@@ -7,12 +7,8 @@ Open items, unverified fixes, and ideas. Nothing here is committed work; the scr
 - **Electron windows (Claude desktop, Microsoft Teams).** In v2 these two windows did not move. v3 changed lookup to pid+title, split move/resize into independent steps, and added the failure summary. The user has not reported the problem since and called the final build "perfect", but never explicitly confirmed those two apps now cascade. If they still fail, the summary alert will name the failing step; likely next moves are `set frontmost of process to true` before positioning, or a short `delay 0.1` between move and resize.
 - **All / None buttons in the compiled app.** They rely on `setTarget:me` / `setAction:` dispatching back into the script. This worked in the tested run but is the part most sensitive to how the script is hosted. Re-check after any change to how the picker is invoked.
 
-- **v7 manual QA** (`docs/QA_v7.md`, M1-M12). In particular:
-  - Single click vs double-click: the timer is cancelled with `cancelPreviousPerformRequestsWithTarget:me`, which relies on ASObjC bridging `me` to the same object each time. If a double-click ever also opens the menu, switch to a click-serial property passed as `withObject:` and checked in `singleClickTimerFired:`.
-  - `performClick:` with the menu attached must open the menu, not re-send `statusItemClicked:`.
-  - Which Run at Startup mechanism is used (SMAppService or the LaunchAgent fallback) on the user's Mac.
+- **v7 QA passed** (`docs/QA_v7.md`). Single vs double-click separation works as implemented; if a double-click ever also opens the menu, switch to a click-serial property passed as `withObject:` and checked in `singleClickTimerFired:`. Run at Startup uses SMAppService on the user's Mac; the LaunchAgent fallback is untested in practice.
 - **LaunchAgent fallback: tick vs "Allow in the Background".** If Cascade uses the LaunchAgent and the user switches it off in System Settings, the plist still exists and the menu still shows a tick. `launchctl print-disabled gui/$UID` may expose that state; not verified.
-- **Applet property write-back on quit.** Stay-open applets save top-level properties into `main.scpt` on quit, which could invalidate the ad-hoc signature. `on quit` clears the AppKit-object properties; QA A8 checks that the signature still verifies after a quit.
 
 ## Ideas (not requested)
 

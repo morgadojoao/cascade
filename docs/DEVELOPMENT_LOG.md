@@ -98,3 +98,7 @@ User confirmed the v6 menu bar app works after the `tccutil reset` fix. Request:
 ### Code review (fresh subagent, checklist in PLAN_v7 section 4)
 
 Fixed: Run at Startup counted "requires approval" (status 2) as on, so after switching Cascade off in System Settings the tick stayed and a click unregistered it; it now shows a mixed state and opens Login Items. Unregistering was attempted on status 3 and could show a false error. Errors in AppKit-invoked handlers (timer, menu delegate, menu actions) were lost; each now calls `showError`. `clickCount()` on a non-mouse event (VoiceOver) would throw; such events open the menu. `on quit` clears AppKit-object properties before the applet saves state. The DMG layout now refuses a volume mounted as "Cascade 1". The `builds/` copy is unregistered from LaunchServices so only `/Applications/Cascade.app` resolves by bundle id. Missing header comments added. Deferred to BACKLOG: LaunchAgent disabled in System Settings still shows ticked; single/double-click separation to be confirmed by hand.
+
+### QA
+
+All automated and manual cases in `docs/QA_v7.md` pass. Run at Startup registered through SMAppService (no LaunchAgent written). The user installed into `~/Applications`; after Quit the signature still verifies and `main.scpt` is unchanged, so the applet does not write its properties back.

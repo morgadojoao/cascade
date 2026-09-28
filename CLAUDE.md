@@ -2,7 +2,7 @@
 
 A macOS menu bar app, written in AppleScript + AppleScriptObjC, that cascades windows diagonally **on whichever display each window is already on**. Double-clicking its menu bar icon cascades every window at a saved size; its menu (right-click, or a single click after a short pause) offers Select Windows... (a checklist picker with a size field), Size... (saves the default size), Run at Startup and Quit. It is built into a stay-open `.app` (no Dock icon) with `osacompile -s` and shipped as a drag-to-Applications DMG.
 
-Status as of 2026-09-28: v6 (menu bar app) user-approved. v7 (clicks, saved size, Run at Startup, DMG) implemented and code-reviewed; manual QA pending, see `docs/QA_v7.md`. Read `docs/DEVELOPMENT_LOG.md` before changing anything; every design choice in the script exists because something simpler broke.
+Status as of 2026-09-28: v6 (menu bar app) user-approved. v7 (clicks, saved size, Run at Startup, DMG) implemented, code-reviewed and QA-passed (`docs/QA_v7.md`). Read `docs/DEVELOPMENT_LOG.md` before changing anything; every design choice in the script exists because something simpler broke.
 
 ## Repo layout
 
